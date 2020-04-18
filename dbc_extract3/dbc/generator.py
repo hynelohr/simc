@@ -1299,8 +1299,8 @@ class SpellDataGenerator(DataGenerator):
          # Anu-Azshara lockout debuff
          304482,
          # 8.3.0 Essences
-         # Breath of the Dying (minor damage spell, R2 minor heal spell, R3 major buff on kill)
-         311192, 311201, 311202,
+         # Breath of the Dying (minor damage spell, R2 minor heal spell, R3 major buff on kill, R3 reset grace period)
+         311192, 311201, 311202, 311947,
          # Spark of Inspiration (minor buff)
          313643,
          # The Formless Void (major unknown buff)
@@ -1432,6 +1432,8 @@ class SpellDataGenerator(DataGenerator):
             ( 273009, 0 ),          # Double Dose, Azerite trait dmg spell
             ( 278962, 0 ),          # Paradise Lost, Azerite trait buff
             ( 286131, 0 ),          # Replicating Shadows, Azerite trait dmg effect
+            ( 197834, 0 ),          # Sinister Strike extra attack damage spell
+            ( 257506, 0 ),          # Shot in the Dark buff for free Cheap Shot casts
         ),
 
         # Priest:

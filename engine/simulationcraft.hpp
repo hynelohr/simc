@@ -528,6 +528,7 @@ struct actor_target_data_t : public actor_pair_t, private noncopyable
     buff_t* blood_of_the_enemy;
     buff_t* condensed_lifeforce;
     buff_t* focused_resolve;
+    buff_t* reaping_flames_tracker;
   } debuff;
 
   struct atd_dot_t
@@ -1040,6 +1041,7 @@ struct sim_t : private sc_thread_t
   bool        single_actor_batch;
   int         progressbar_type;
   int         armory_retries;
+  bool        allow_experimental_specializations;
 
   // Target options
   double      enemy_death_pct;
@@ -1247,6 +1249,8 @@ struct sim_t : private sc_thread_t
     double whispered_truths_offensive_chance = 0.75;
     /// Whether the player is in Ny'alotha or not.
     bool nyalotha = true;
+    /// Chance for Infinite Stars to not hit the primary target (for single target sims)
+    double infinite_stars_miss_chance = 0;
   } bfa_opts;
 
   // Expansion specific data
@@ -1660,7 +1664,6 @@ struct module_t
   static const module_t* warlock();
   static const module_t* warrior();
   static const module_t* enemy();
-  static const module_t* tmi_enemy();
   static const module_t* tank_dummy_enemy();
   static const module_t* heal_enemy();
 
@@ -1681,7 +1684,6 @@ struct module_t
       case WARLOCK:      return warlock();
       case WARRIOR:      return warrior();
       case ENEMY:        return enemy();
-      case TMI_BOSS:     return tmi_enemy();
       case TANK_DUMMY:   return tank_dummy_enemy();
       default: break;
     }
@@ -2869,7 +2871,7 @@ private:
     blp_state( BLP_ENABLED )
   { }
 
-  static double max_interval() { return 10.0; }
+  static double max_interval() { return 3.5; }
   static double max_bad_luck_prot() { return 1000.0; }
 public:
   static double proc_chance( player_t*         player,
@@ -3128,6 +3130,21 @@ struct effect_callbacks_t
   void reset();
 
   void register_callback( unsigned proc_flags, unsigned proc_flags2, T_CB* cb );
+
+  // Helper to get first instance of object T and return it, if not found, return nullptr
+  template <typename T>
+  T* get_first_of() const
+  {
+    for ( size_t i = 0; i < all_callbacks.size(); ++i )
+    {
+      auto ptr = dynamic_cast<T*>( all_callbacks[ i ] );
+      if ( ptr )
+      {
+        return ptr;
+      }
+    }
+    return nullptr;
+  }
 private:
   void add_proc_callback( proc_types type, unsigned flags, T_CB* cb );
 };
@@ -4265,7 +4282,7 @@ public:
 
   // Static methods
   static player_t* create( sim_t* sim, const player_description_t& );
-  static bool _is_enemy( player_e t ) { return t == ENEMY || t == ENEMY_ADD || t == TMI_BOSS || t == TANK_DUMMY; }
+  static bool _is_enemy( player_e t ) { return t == ENEMY || t == ENEMY_ADD || t == ENEMY_ADD_BOSS || t == TANK_DUMMY; }
   static bool _is_sleeping( const player_t* t ) { return t -> current.sleeping; }
 
 
@@ -4276,7 +4293,7 @@ public:
 
   // Normal methods
   void init_character_properties();
-  void collect_resource_timeline_information();
+  double get_stat_value(stat_e);
   void stat_gain( stat_e stat, double amount, gain_t* g = nullptr, action_t* a = nullptr, bool temporary = false );
   void stat_loss( stat_e stat, double amount, gain_t* g = nullptr, action_t* a = nullptr, bool temporary = false );
   void create_talents_numbers();
@@ -4298,15 +4315,14 @@ public:
   bool parse_talents_armory( const std::string& talent_string );
   bool parse_talents_armory2( const std::string& talent_string );
   bool parse_talents_wowhead( const std::string& talent_string );
-  std::unique_ptr<expr_t> create_resource_expression( const std::string& name );
-
 
   bool is_moving() const
   { return buffs.movement && buffs.movement -> check(); }
   double composite_block_dr( double extra_block ) const;
-  bool is_pet() const { return type == PLAYER_PET || type == PLAYER_GUARDIAN || type == ENEMY_ADD; }
+  bool is_pet() const { return type == PLAYER_PET || type == PLAYER_GUARDIAN || type == ENEMY_ADD || type == ENEMY_ADD_BOSS; }
   bool is_enemy() const { return _is_enemy( type ); }
-  bool is_add() const { return type == ENEMY_ADD; }
+  bool is_boss() const { return type == ENEMY || type == ENEMY_ADD_BOSS; }
+  bool is_add() const { return type == ENEMY_ADD || type == ENEMY_ADD_BOSS; }
   bool is_sleeping() const { return _is_sleeping( this ); }
   bool is_my_pet( const player_t* t ) const;
   bool in_gcd() const { return gcd_ready > sim -> current_time(); }
@@ -4447,6 +4463,7 @@ public:
   virtual void create_actions();
   virtual void init_actions();
   virtual void init_finished();
+  virtual void action_init_finished(action_t&);
   virtual bool verify_use_items() const;
   virtual void reset();
   virtual void combat_begin();
@@ -4610,6 +4627,7 @@ public:
   virtual timespan_t time_to_percent( double percent ) const;
   virtual void cost_reduction_gain( school_e school, double amount, gain_t* g = nullptr, action_t* a = nullptr );
   virtual void cost_reduction_loss( school_e school, double amount, action_t* a = nullptr );
+  virtual void collect_resource_timeline_information();
 
   virtual void assess_damage( school_e, result_amount_type, action_state_t* );
   virtual void target_mitigation( school_e, result_amount_type, action_state_t* );
@@ -4625,6 +4643,7 @@ public:
 
   virtual std::unique_ptr<expr_t> create_expression( const std::string& name );
   virtual std::unique_ptr<expr_t> create_action_expression( action_t&, const std::string& name );
+  virtual std::unique_ptr<expr_t> create_resource_expression( const std::string& name );
 
   virtual void create_options();
   void recreate_talent_str( talent_format format = talent_format::NUMBERS );
@@ -4913,6 +4932,9 @@ public:
 
   virtual void summon( timespan_t duration = timespan_t::zero() );
   virtual void dismiss( bool expired = false );
+  // Adjust pet remaining duration. New duration of <= 0 dismisses pet. No-op on
+  // persistent pets.
+  virtual void adjust_duration( const timespan_t& adjustment );
 
   const char* name() const override { return full_name_str.c_str(); }
   const player_t* get_owner_or_self() const override
@@ -5792,6 +5814,9 @@ public:
   virtual double base_cost() const;
 
   virtual double cost_per_tick( resource_e ) const;
+
+  virtual timespan_t cooldown_duration() const
+  { return cooldown ? cooldown->duration : timespan_t::zero(); }
 
   virtual timespan_t gcd() const;
 
@@ -7032,11 +7057,14 @@ struct dbc_proc_callback_t : public action_callback_t
       return;
     }
 
-    // Don't allow harmful actions to proc on players
-    if ( proc_action && proc_action->harmful && !state->target->is_enemy() )
+    if ( proc_action && proc_action->harmful )
     {
-      return;
-    }
+      // Don't allow players to harm other players, and enemies harm other enemies
+      if (state->action && state->action->player->is_enemy() == state->target->is_enemy())
+      {
+        return;
+      }
+    } 
 
     bool triggered = roll( a );
     if ( listener -> sim -> debug )

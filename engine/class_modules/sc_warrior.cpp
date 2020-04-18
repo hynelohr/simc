@@ -59,7 +59,6 @@ public:
   bool non_dps_mechanics, warrior_fixed_time;
   int into_the_fray_friends;
   int never_surrender_percentage;
-  double expected_max_health;
 
   auto_dispose<std::vector<data_t*> > cd_waste_exec, cd_waste_cumulative;
   auto_dispose<std::vector<simple_data_t*> > cd_waste_iter;
@@ -493,7 +492,6 @@ public:
     warrior_fixed_time    = true;
     into_the_fray_friends = -1;
     never_surrender_percentage = 70;
-    expected_max_health   = 0;
 
     resource_regeneration = regen_type::DISABLED;
 
@@ -5014,63 +5012,7 @@ void warrior_t::init_base_stats()
 
   base_gcd = timespan_t::from_seconds( 1.5 );
 
-  resources.base_multiplier[ RESOURCE_HEALTH ] *= 1 + talents.indomitable->effectN( 1 ).percent();
-
-  if ( specialization() == WARRIOR_PROTECTION )
-  {
-    if ( items.size() > 0 )
-    {
-      double totalweight         = 0;
-      double avg_weighted_ilevel = 0;
-      size_t divisor             = 0;
-      for ( size_t i = 0; i < items.size(); i++ )
-      {
-        if ( items[ i ].slot == SLOT_SHIRT || items[ i ].slot == SLOT_TABARD || !items[ i ].active() )
-        {
-          continue;
-        }
-        const auto& data = dbc.random_property( items[ i ].item_level() );
-        if ( data.p_epic[ 0 ] == 0 )
-        {
-          continue;
-        }
-
-        double ratio = data.p_epic[ item_database::random_suffix_type( items[ i ] ) ] / data.p_epic[ 0 ];
-        totalweight += ratio;
-        divisor++;
-      }
-      for ( size_t i = 0; i < items.size(); i++ )
-      {
-        if ( items[ i ].slot == SLOT_SHIRT || items[ i ].slot == SLOT_TABARD || !items[ i ].active() )
-        {
-          continue;
-        }
-        const auto& data = dbc.random_property( items[ i ].item_level() );
-        if ( data.p_epic[ 0 ] == 0 )
-        {
-          continue;
-        }
-
-        double ratio = data.p_epic[ item_database::random_suffix_type( items[ i ] ) ] / data.p_epic[ 0 ];
-        avg_weighted_ilevel += ( ratio * static_cast<double>( items[ i ].item_level() ) / totalweight * divisor );
-      }
-
-
-      int average_itemlevel = static_cast<int>( divisor ? avg_weighted_ilevel / divisor : 0.0 );
-
-      if (average_itemlevel > 0 )
-      {
-
-        const auto& data = dbc.random_property( static_cast<int>( average_itemlevel ) );
-
-        expected_max_health = data.p_epic[ 0 ] * 8.484262;
-        expected_max_health += base.stats.attribute[ ATTR_STAMINA ];
-        expected_max_health *= 1.0 + matching_gear_multiplier( ATTR_STAMINA );
-        expected_max_health *= 60;
-
-      }
-    }
-  }
+  resources.initial_multiplier[ RESOURCE_HEALTH ] *= 1 + talents.indomitable -> effectN( 1 ).percent();
 }
 
 // warrior_t::merge ==========================================================
@@ -5230,7 +5172,11 @@ void warrior_t::apl_fury()
     }
     else if ( racial_actions[ i ] == "lights_judgment" )
     {
-      default_list->add_action( racial_actions[ i ] + ",if=buff.recklessness.down" );
+      default_list->add_action( racial_actions[ i ] + ",if=buff.recklessness.down&debuff.siegebreaker.down" );
+    }
+    else if ( racial_actions[ i ] == "bag_of_tricks" )
+    {
+      default_list->add_action( racial_actions[ i ] + ",if=buff.recklessness.down&debuff.siegebreaker.down&buff.enrage.up" );
     }
     else
     {
@@ -5290,7 +5236,11 @@ void warrior_t::apl_arms()
     }
     else if ( racial_actions[ i ] == "lights_judgment" )
     {
-      default_list->add_action( racial_actions[ i ] + ",if=debuff.colossus_smash.down" );
+      default_list->add_action( racial_actions[ i ] + ",if=debuff.colossus_smash.down&buff.memory_of_lucid_dreams.down&cooldown.mortal_strike.remains" );
+    }
+    else if ( racial_actions[ i ] == "bag_of_tricks" )
+    {
+      default_list->add_action( racial_actions[ i ] + ",if=debuff.colossus_smash.down&buff.memory_of_lucid_dreams.down&cooldown.mortal_strike.remains" );
     }
     else if ( racial_actions[ i ] == "berserking" )
     {
@@ -5822,15 +5772,17 @@ void warrior_t::create_buffs()
   buff.rallying_cry = new buffs::rallying_cry_t( *this, "rallying_cry", find_spell( 97463 ) );
 
   buff.overpower =
-      make_buff( this, "overpower", spec.overpower )
-      ->set_default_value( spec.overpower->effectN( 2 ).percent() + talents.dreadnaught->effectN( 2 ).percent() );
+    make_buff( this, "overpower", spec.overpower )
+    ->set_default_value( spec.overpower->effectN( 2 ).percent() + talents.dreadnaught->effectN( 2 ).percent() );
 
-  buff.ravager = make_buff( this, "ravager", talents.ravager );
+  buff.ravager = make_buff( this, "ravager", talents.ravager )
+    -> set_cooldown( 0_ms ); // handled by the ability
 
   buff.ravager_protection = make_buff( this, "ravager_protection", spell.ravager_protection )
     ->add_invalidate( CACHE_PARRY );
 
-  buff.spell_reflection = make_buff( this, "spell_reflection", spec.spell_reflection );
+  buff.spell_reflection = make_buff( this, "spell_reflection", spec.spell_reflection )
+    -> set_cooldown( 0_ms ); // handled by the ability
 
   buff.sweeping_strikes = make_buff( this, "sweeping_strikes", spec.sweeping_strikes )
       ->set_cooldown( timespan_t::zero() );
@@ -6074,7 +6026,7 @@ std::string warrior_t::default_potion() const
 
   std::string protection_pot =
       ( true_level > 110 )
-          ? "superior_battle_potion_of_strength"
+          ? "potion_of_unbridled_fury"
           : ( true_level > 100 )
                 ? "old_war"
                 : ( true_level >= 90 )

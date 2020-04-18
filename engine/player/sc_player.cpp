@@ -1458,6 +1458,11 @@ void player_t::init_base_stats()
 
     if ( base.distance < 1 )
       base.distance = 5;
+
+    // Armor Coefficient, based on level (6300 @ 120)
+    base.armor_coeff = dbc.armor_mitigation_constant( level() );
+    sim->print_debug( "{} base armor coefficient set to {}.", *this, base.armor_coeff );
+
   }
 
   // only certain classes get Agi->Dodge conversions, dodge_per_agility defaults to 0.00
@@ -1473,12 +1478,16 @@ void player_t::init_base_stats()
   // All classes get 3% dodge and miss
   base.dodge = 0.03;
   base.miss = 0.03;
-  // Dodge from base agillity isn't affected by diminishing returns and is added here
-  base.dodge += racials.quickness->effectN( 1 ).percent() +
-      ( dbc.race_base( race ).agility + dbc.attribute_base( type, level() ).agility ) * base.dodge_per_agility;
+
+  if (racials.quickness->ok()) // check spell data to avoid applying it to enemies.
+  {
+    // Dodge from base agillity isn't affected by diminishing returns and is added here
+    base.dodge += racials.quickness->effectN(1).percent() +
+      (dbc.race_base(race).agility + dbc.attribute_base(type, level()).agility) * base.dodge_per_agility;
+  }
 
   // Only Warriors and Paladins (and enemies) can block, defaults to 0
-  if ( type == WARRIOR || type == PALADIN || type == ENEMY || type == TMI_BOSS || type == TANK_DUMMY )
+  if ( type == WARRIOR || type == PALADIN || type == ENEMY || type == TANK_DUMMY )
   {
     // Set block reduction to 0 for warrior/paladin because it's computed in composite_block_reduction()
     base.block_reduction = 0;
@@ -1500,10 +1509,13 @@ void player_t::init_base_stats()
   // Only certain classes can parry, and get 3% base parry, default is 0
   // Parry from base strength isn't affected by diminishing returns and is added here
   if ( type == WARRIOR || type == PALADIN || type == ROGUE || type == DEATH_KNIGHT || type == MONK ||
-       type == DEMON_HUNTER || specialization() == SHAMAN_ENHANCEMENT || type == ENEMY || type == TMI_BOSS ||
-       type == TANK_DUMMY )
+       type == DEMON_HUNTER || specialization() == SHAMAN_ENHANCEMENT  )
   {
     base.parry = 0.03 + ( dbc.race_base( race ).strength + dbc.attribute_base( type, level() ).strength ) * base.parry_per_strength;
+  }
+  else if ( type == ENEMY || type == TANK_DUMMY )
+  {
+    base.parry = 0.03;
   }
 
   // Extract avoidance DR values from table in sc_extra_data.inc
@@ -1831,9 +1843,6 @@ void player_t::init_defense()
     collected_data.health_changes_tmi.set_bin_size( sim->tmi_bin_size );
   }
 
-  // Armor Coefficient
-  initial.armor_coeff = dbc.armor_mitigation_constant( level() );
-  sim->print_debug( "{} initial armor coefficient set to {}.", *this, initial.armor_coeff );
 }
 
 void player_t::init_weapon( weapon_t& w )
@@ -2339,12 +2348,13 @@ void player_t::init_spells()
     const spell_data_t* s = find_mastery_spell( specialization() );
     if ( s->ok() )
       _mastery = &( s->effectN( 1 ) );
+
+    if (record_healing())
+    {
+      spells.leech = new leech_t(this);
+    }
   }
 
-  if ( record_healing() )
-  {
-    spells.leech = new leech_t( this );
-  }
 }
 
 void player_t::init_gains()
@@ -2913,6 +2923,19 @@ void player_t::init_assessors()
 
 void player_t::init_finished()
 {
+
+  for (auto action : action_list)
+  {
+    try
+    {
+      action_init_finished(*action);
+    }
+    catch (const std::exception&)
+    {
+      std::throw_with_nested(std::runtime_error(fmt::format("Action '{}'", action->name())));
+    }
+  }
+
   for ( auto action : action_list )
   {
     try
@@ -2924,6 +2947,7 @@ void player_t::init_finished()
       std::throw_with_nested(std::runtime_error(fmt::format("Action '{}'", action->name())));
     }
   }
+
 
   // Naive recording of minimum energy thresholds for the actor.
   // TODO: Energy pooling, and energy-based expressions (energy>=10) are not included yet
@@ -2961,6 +2985,11 @@ void player_t::init_finished()
       }
     } );
   }
+}
+
+void player_t::action_init_finished(action_t&)
+{
+  // here could be generic affected_by code
 }
 
 /**
@@ -5377,7 +5406,10 @@ void player_t::arise()
 
   current_attack_speed = cache.attack_speed();
 
-  range::for_each( callbacks_on_arise, []( const std::function<void( void )>& fn ) { fn(); } );
+  // Requires index-based lookup since on-arise callbacks may
+  // insert new on-arise callbacks to the vector.
+  for ( size_t i = 0; i < callbacks_on_arise.size(); ++i )
+    callbacks_on_arise[ i ]();
 }
 
 /**
@@ -5410,7 +5442,10 @@ void player_t::demise()
   event_t::cancel( off_gcd );
   event_t::cancel( cast_while_casting_poll_event );
 
-  range::for_each( callbacks_on_demise, [this]( const std::function<void( player_t* )>& fn ) { fn( this ); } );
+  // Requires index-based lookup since on-demise callbacks may
+  // insert new on-demise callbacks to the vector.
+  for ( size_t i = 0; i < callbacks_on_demise.size(); ++i )
+    callbacks_on_demise[ i ]( this );
 
   for ( size_t i = 0; i < buff_list.size(); ++i )
   {
@@ -5621,6 +5656,35 @@ void player_t::regen( timespan_t periodicity )
   }
 }
 
+
+double player_t::get_stat_value(stat_e stat)
+{
+  switch (stat)
+  {
+
+  case STAT_STRENGTH:
+    return cache.strength();
+  case STAT_AGILITY:
+    return cache.agility();
+  case STAT_INTELLECT:
+    return cache.intellect();
+  case STAT_SPELL_POWER:
+    return cache.spell_power(SCHOOL_NONE);
+  case STAT_ATTACK_POWER:
+    return cache.attack_power();
+  case STAT_MASTERY_RATING:
+    return composite_mastery_rating();
+  case STAT_VERSATILITY_RATING:
+    return composite_damage_versatility_rating();
+  case STAT_ARMOR:
+    return cache.armor();
+  default:
+    break;
+  }
+
+  return 0.0;
+}
+
 void player_t::collect_resource_timeline_information()
 {
   for ( auto& elem : collected_data.resource_timelines )
@@ -5630,27 +5694,8 @@ void player_t::collect_resource_timeline_information()
 
   for ( auto& elem : collected_data.stat_timelines )
   {
-    switch ( elem.type )
-    {
-      case STAT_STRENGTH:
-        elem.timeline.add( sim->current_time(), cache.strength() );
-        break;
-      case STAT_AGILITY:
-        elem.timeline.add( sim->current_time(), cache.agility() );
-        break;
-      case STAT_INTELLECT:
-        elem.timeline.add( sim->current_time(), cache.intellect() );
-        break;
-      case STAT_SPELL_POWER:
-        elem.timeline.add( sim->current_time(), cache.spell_power( SCHOOL_NONE ) );
-        break;
-      case STAT_ATTACK_POWER:
-        elem.timeline.add( sim->current_time(), cache.attack_power() );
-        break;
-      default:
-        elem.timeline.add( sim->current_time(), 0 );
-        break;
-    }
+    auto value = get_stat_value(elem.type);
+    elem.timeline.add(sim->current_time(), value);
   }
 }
 
@@ -6619,23 +6664,24 @@ void player_t::target_mitigation( school_e school, result_amount_type dmg_type, 
 
   if ( school == SCHOOL_PHYSICAL && dmg_type == result_amount_type::DMG_DIRECT )
   {
-    if ( sim->debug && s->action && !s->target->is_enemy() && !s->target->is_add() )
-      sim->out_debug.printf( "Damage to %s before armor mitigation is %f", s->target->name(), s->result_amount );
+    if ( s -> action && !s -> target -> is_enemy() && !s-> target -> is_add() )
+      sim -> print_debug( "Damage to {} before armor mitigation is {}", s -> target -> name(), s -> result_amount );
 
     // Maximum amount of damage reduced by armor
     double armor_cap = 0.85;
 
     // Armor
-    if ( s->action )
+    if ( s -> action )
     {
-      double armor  = s->target_armor;
+      double armor  = s -> target_armor;
       double resist = armor / ( armor + s -> action -> player -> current.armor_coeff );
       resist        = clamp( resist, 0.0, armor_cap );
       s -> result_amount *= 1.0 - resist;
     }
 
-    if ( sim->debug && s->action && !s->target->is_enemy() && !s->target->is_add() )
-      sim->out_debug.printf( "Damage to %s after armor mitigation is %f (%f armor)", s->target->name(), s->result_amount, s -> target_armor );
+    if ( s -> action && !s -> target -> is_enemy() && !s-> target -> is_add() )
+      sim -> print_debug( "Damage to {} after armor mitigation is {} ({} armor, {} armor coeff)",
+                          s -> target -> name(), s -> result_amount, s -> target_armor, s -> action -> player -> current.armor_coeff );
 
     double pre_block_amount = s->result_amount;
 
@@ -7647,6 +7693,36 @@ struct variable_t : public action_t
         break;
     }
   }
+};
+
+struct cycling_variable_t : public variable_t
+{
+	using variable_t::variable_t;
+
+	void execute() override
+	{
+		if (sim->target_non_sleeping_list.size() > 1)
+		{
+			player_t* saved_target = target;
+
+			// Note, need to take a copy of the original target list here, instead of a reference. Otherwise
+			// if spell_targets (or any expression that uses the target list) modifies it, the loop below
+			// may break, since the number of elements on the vector is not the same as it originally was
+			std::vector<player_t*> ctl = target_list();
+			size_t num_targets = ctl.size();
+
+			for (size_t i = 0; i < num_targets; i++)
+			{
+				target = ctl[i];
+				variable_t::execute();
+			}
+
+			target = saved_target;
+			return;
+		}
+
+		variable_t::execute();
+	}
 };
 
 // ===== Racial Abilities ===================================================
@@ -9093,6 +9169,8 @@ action_t* player_t::create_action( const std::string& name, const std::string& o
     return new pool_resource_t( this, options_str );
   if ( name == "variable" )
     return new variable_t( this, options_str );
+  if ( name == "cycling_variable" )
+    return new cycling_variable_t( this, options_str );
 
   if ( auto action = azerite::create_action( this, name, options_str ) )
     return action;
@@ -10100,10 +10178,13 @@ std::unique_ptr<expr_t> player_t::create_expression( const std::string& expressi
     return expr_t::create_constant( "bugs", bugs );
 
   if ( expression_str == "is_add" )
-    return expr_t::create_constant("is_add", is_add() );
+    return expr_t::create_constant( "is_add", is_add() );
+
+  if ( expression_str == "is_boss" )
+    return expr_t::create_constant( "is_boss", is_boss() );
 
   if ( expression_str == "is_enemy" )
-    return expr_t::create_constant("is_enemy", is_enemy() );
+    return expr_t::create_constant( "is_enemy", is_enemy() );
 
   if ( expression_str == "attack_haste" )
     return make_fn_expr( expression_str, [this] { return cache.attack_haste(); } );
@@ -10647,7 +10728,7 @@ std::unique_ptr<expr_t> player_t::create_resource_expression( const std::string&
   {
     if ( splits[ 1 ] == "deficit" )
     {
-      return make_fn_expr( name_str, [this, r] { return resources.max[ r ] - resources.current[ r ]; } );
+      return make_fn_expr( name_str, [ this, r ] { return resources.max[ r ] - resources.current[ r ]; } );
     }
 
     else if ( splits[ 1 ] == "pct" || splits[ 1 ] == "percent" )
@@ -10658,7 +10739,7 @@ std::unique_ptr<expr_t> player_t::create_resource_expression( const std::string&
       }
       else
       {
-        return make_fn_expr( name_str, [this, r] { return resources.pct( r ) * 100.0; } );
+        return make_fn_expr( name_str, [ this, r ] { return resources.pct( r ) * 100.0; } );
       }
     }
 
@@ -10670,13 +10751,14 @@ std::unique_ptr<expr_t> player_t::create_resource_expression( const std::string&
 
     else if ( splits[ 1 ] == "pct_nonproc" )
     {
-      return make_fn_expr( name_str, [this, r] {
+      return make_fn_expr( name_str, [ this, r ] {
         return resources.current[ r ] / collected_data.buffed_stats_snapshot.resource[ r ] * 100.0;
       } );
     }
+    
     else if ( splits[ 1 ] == "net_regen" )
     {
-      return make_fn_expr( name_str, [this, r] {
+      return make_fn_expr( name_str, [ this, r ] {
         timespan_t now = sim->current_time();
         if ( now != timespan_t::zero() )
           return ( iteration_resource_gained[ r ] - iteration_resource_lost[ r ] ) / now.total_seconds();
@@ -10684,15 +10766,38 @@ std::unique_ptr<expr_t> player_t::create_resource_expression( const std::string&
           return 0.0;
       } );
     }
+    
     else if ( splits[ 1 ] == "regen" )
     {
-      return make_fn_expr( name_str, [this, r] { return resources.base_regen_per_second[ r ]; } );
+      return make_fn_expr( name_str, [ this, r ] { return resource_regen_per_second( r ); } );
     }
-
-    else if ( splits[ 1 ] == "time_to_max" )
+    
+    else if ( util::str_begins_with_ci( splits[ 1 ], "time_to_" ) )
     {
-      return make_fn_expr( "time_to_max_resource", [this, r] {
-        return ( resources.max[ r ] - resources.current[ r ] ) / resources.base_regen_per_second[ r ];
+      std::vector<std::string> parts = util::string_split( splits[ 1 ], "_" );
+
+      // foo.time_to_max
+      if ( util::str_in_str_ci( parts[ 2 ], "max" ) )
+      {
+        return make_fn_expr( name_str, [ this, r ] {
+          return ( resources.max[ r ] - resources.current[ r ] ) / resource_regen_per_second( r );
+        } );
+      }
+
+      // foo.time_to_x
+      const double amount = std::stod( parts[ 2 ] );
+      return make_fn_expr( name_str, [ this, r, amount ] {
+        if ( resources.current[ r ] >= amount )
+        {
+          return timespan_t::zero().total_seconds();
+        }
+        else if ( amount > resources.max[ r ] )
+        {
+          // If the value is impossible to reach, return functional infinity
+          return timespan_t::max().total_seconds();
+        }
+        
+        return ( amount - resources.current[ r ] ) / resource_regen_per_second( r );
       } );
     }
   }

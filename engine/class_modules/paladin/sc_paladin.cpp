@@ -162,12 +162,6 @@ struct avenging_wrath_t : public paladin_spell_t
 
     p() -> buffs.avenging_wrath_autocrit -> trigger();
   }
-
-  bool ready() override
-  {
-    // Avenging Wrath can not be used if the buff is already active (eg. with Vision of Perfection)
-    return p() -> buffs.avenging_wrath -> check() ? false : paladin_spell_t::ready();
-  }
 };
 
 // Consecration =============================================================
@@ -1161,6 +1155,7 @@ void paladin_t::create_buffs()
   buffs.divine_steed = make_buff( this, "divine_steed", find_spell( "Divine Steed" ) )
                      -> set_duration( 3_s )
                      -> set_chance( 1.0 )
+                     -> set_cooldown( 0_ms ) // handled by the ability
                      -> set_default_value( 1.0 ); // TODO: change this to spellid 221883 & see if that automatically captures details
 
   // General
@@ -1305,7 +1300,7 @@ std::string paladin_t::default_rune() const
 void paladin_t::init_action_list()
 {
   // 2019-04-03: The Holy module is outdated and not supported (both for dps and healing)
-  if ( specialization() == PALADIN_HOLY )
+  if ( !sim->allow_experimental_specializations && specialization() == PALADIN_HOLY )
   {
     if ( ! quiet )
       sim -> errorf( "Paladin holy for player %s is not currently supported.", name() );

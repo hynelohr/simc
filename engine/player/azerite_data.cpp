@@ -1335,6 +1335,9 @@ void register_azerite_powers()
   unique_gear::register_special_effect( 300170, special_effects::clockwork_heart       );
   unique_gear::register_special_effect( 300168, special_effects::personcomputer_interface );
   unique_gear::register_special_effect( 317137, special_effects::heart_of_darkness );
+  unique_gear::register_special_effect( 268437, special_effects::impassive_visage );
+  unique_gear::register_special_effect( 268596, special_effects::gemhide );
+  unique_gear::register_special_effect( 271536, special_effects::crystalline_carapace );
 
   // Generic Azerite Essences
   //
@@ -1364,6 +1367,11 @@ void register_azerite_powers()
   unique_gear::register_special_effect( 310712, azerite_essences::breath_of_the_dying ); // lethal strikes
   unique_gear::register_special_effect( 311210, azerite_essences::spark_of_inspiration ); // unified strength
   unique_gear::register_special_effect( 312771, azerite_essences::formless_void ); // symbiotic prensence
+  unique_gear::register_special_effect( 310603, azerite_essences::strength_of_the_warden ); // endurance
+  unique_gear::register_special_effect( 293030, azerite_essences::unwavering_ward ); // unwavering ward
+  unique_gear::register_special_effect( 297411, azerite_essences::spirit_of_preservation ); // devout spirit
+  unique_gear::register_special_effect( 295164, azerite_essences::touch_of_the_everlasting ); // will to survive
+
   // Vision of Perfection major Azerite Essence
   unique_gear::register_special_effect( 296325, azerite_essences::vision_of_perfection );
 }
@@ -1442,6 +1450,21 @@ void register_azerite_target_data_initializers( sim_t* sim )
     else
     {
       td->debuff.condensed_lifeforce = make_buff( *td, "condensed_lifeforce" )
+        ->set_quiet( true );
+    }
+  } );
+
+  sim->register_target_data_initializer( [] ( actor_target_data_t * td ) {
+    auto essence = td->source->find_azerite_essence( "Breath of the Dying" );
+    if ( essence.enabled() )
+    {
+      td->debuff.reaping_flames_tracker = make_buff( *td, "reaping_flames_tracker", td->source->find_spell( 311947 ) )
+        ->set_quiet( true );
+      td->debuff.reaping_flames_tracker->reset();
+    }
+    else
+    {
+      td->debuff.reaping_flames_tracker = make_buff( *td, "reaping_flames_tracker" )
         ->set_quiet( true );
     }
   } );
@@ -3653,6 +3676,7 @@ void clockwork_heart( special_effect_t& effect )
     ticker = make_buff( effect.player, "clockwork_heart_ticker", effect.trigger() )
       ->set_quiet( true )
       ->set_tick_time_behavior( buff_tick_time_behavior::UNHASTED )
+      ->set_tick_on_application( true )
       ->set_tick_callback( [clockwork]( buff_t*, int, const timespan_t& ) {
         clockwork->trigger();
       } );
@@ -3732,6 +3756,198 @@ void heart_of_darkness( special_effect_t& effect )
       }
     } );
   }
+}
+
+void impassive_visage(special_effect_t& effect)
+{
+  class impassive_visage_heal_t : public heal_t
+  {
+  public:
+    impassive_visage_heal_t(player_t* p, const spell_data_t* s, double amount) :
+      heal_t("impassive_visage", p, s)
+    {
+      target = p;
+      background = true;
+      base_dd_min = base_dd_max = amount;
+    }
+  };
+
+  class impassive_visage_cb_t : public dbc_proc_callback_t
+  {
+    impassive_visage_heal_t* heal_action;
+  public:
+    impassive_visage_cb_t(const special_effect_t& effect, impassive_visage_heal_t* heal) :
+      dbc_proc_callback_t(effect.player, effect),
+      heal_action(heal)
+    {
+    }
+
+    void execute(action_t* /* a */, action_state_t* /* state */) override
+    {
+      heal_action->execute();
+    }
+  };
+
+  azerite_power_t power = effect.player->find_azerite_spell(effect.driver()->name_cstr());
+  if (!power.enabled())
+  {
+    return;
+  }
+  const spell_data_t* driver = power.spell();
+  const spell_data_t* heal = driver->effectN(1).trigger();
+
+  auto heal_action = new impassive_visage_heal_t(effect.player, heal, power.value());
+  new impassive_visage_cb_t(effect, heal_action);
+}
+
+void gemhide(special_effect_t& effect)
+{
+  struct gemhide_cb_t : public dbc_proc_callback_t
+  {
+    buff_t* buff;
+    double damage_threshold;
+
+    gemhide_cb_t( const special_effect_t& effect, buff_t* buff, double dt ) :
+      dbc_proc_callback_t( effect.player, effect ), buff( buff ), damage_threshold( dt )
+    {
+    }
+
+    void execute( action_t* /* a */, action_state_t* state ) override
+    {
+      // Gemhide takes the amount of damage before absorbs
+      if ( state -> result_mitigated > listener -> max_health() * damage_threshold )
+      {
+        buff -> trigger();
+      }
+    }
+  };
+
+  azerite_power_t power = effect.player -> find_azerite_spell( effect.driver() -> name_cstr() );
+  if ( !power.enabled() )
+  {
+    return;
+  }
+
+  // The callback data isn't on the azerite's main spell ID, but on 270579
+  effect.spell_id = power.spell() -> effectN( 2 ).trigger() -> id();
+
+  buff_t* buff = buff_t::find( effect.player, "gemhide" );
+  if ( !buff )
+  {
+    buff = make_buff<stat_buff_t>( effect.player, "gemhide", power.spell()
+                                   -> effectN( 2 ).trigger() -> effectN( 1 ).trigger() )
+          -> add_stat( STAT_AVOIDANCE_RATING, power.value( 1 ) )
+          -> add_stat( STAT_ARMOR, power.value( 2 ) );
+  }
+  new gemhide_cb_t( effect, buff, power.spell() -> effectN( 3 ).percent() );
+}
+
+void crystalline_carapace( special_effect_t& effect )
+{
+  class crystalline_carapace_buff_t : public stat_buff_t
+  {
+    action_callback_t* callback;
+
+  public:
+    crystalline_carapace_buff_t( player_t* p, const spell_data_t* s, double armor, action_callback_t* callback )
+      : stat_buff_t( p, "crystalline_carapace", s ), callback( callback )
+    {
+      add_stat( STAT_ARMOR, armor );
+    }
+
+    void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
+    {
+      stat_buff_t::expire_override( expiration_stacks, remaining_duration );
+      callback->deactivate();
+    }
+
+    void start( int stacks, double value, timespan_t duration ) override
+    {
+      stat_buff_t::start( stacks, value, duration );
+      callback->activate();
+    }
+  };
+
+  class crystalline_carapace_damage_t : public spell_t
+  {
+  public:
+    crystalline_carapace_damage_t( player_t* p, const spell_data_t* s, double amount )
+      : spell_t( "crystalline_carapace_damage", p, s )
+    {
+      background  = true;
+      base_dd_min = base_dd_max = amount;
+    }
+  };
+
+  class crystalline_carapace_cb_t : public dbc_proc_callback_t
+  {
+    buff_t* buff;
+
+  public:
+    crystalline_carapace_cb_t( const special_effect_t& effect, buff_t* buff )
+      : dbc_proc_callback_t( effect.player, effect ), buff( buff )
+    {
+    }
+
+    void execute( action_t* /* a */, action_state_t* state ) override
+    {
+      if ( state->result_amount * 10.0 > listener->max_health() )
+      {
+        buff->trigger();
+      }
+    }
+  };
+
+  class crystalline_carapace_melee_attack_cb_t : public dbc_proc_callback_t
+  {
+    action_t* enemy_damage;
+
+  public:
+    crystalline_carapace_melee_attack_cb_t( const special_effect_t& effect, action_t* enemy_damage )
+      : dbc_proc_callback_t( effect.player, effect ), enemy_damage( enemy_damage )
+    {
+    }
+
+    void execute( action_t* /* a */, action_state_t* state ) override
+    {
+      if ( state->action )
+      {
+        enemy_damage->target = state->action->player;
+        enemy_damage->schedule_execute();
+      }
+    }
+  };
+
+  azerite_power_t power = effect.player->find_azerite_spell( effect.driver()->name_cstr() );
+  if ( !power.enabled() )
+  {
+    return;
+  }
+
+  effect.spell_id                = 271537;
+  const spell_data_t* buff_spell = effect.player->find_spell( 271538 );
+  action_t* damage_action =
+      new crystalline_carapace_damage_t( effect.player, effect.player->find_spell( 271539 ), power.value( 1 ) );
+
+  // TODO: get this to proc.
+  auto secondary      = new special_effect_t( effect.player );
+  secondary->name_str = "crystalline_carapace_melee_taken";
+  secondary->spell_id = 271538;
+  secondary->type     = effect.type;
+  secondary->source   = effect.source;
+
+  effect.player->special_effects.push_back( secondary );
+
+  auto trigger_cb = new crystalline_carapace_melee_attack_cb_t( *secondary, damage_action );
+  trigger_cb->deactivate();
+
+  buff_t* buff = buff_t::find( effect.player, "crystalline_carapace" );
+  if ( !buff )
+  {
+    buff = make_buff<crystalline_carapace_buff_t>( effect.player, buff_spell, power.value( 2 ), trigger_cb );
+  }
+
+  new crystalline_carapace_cb_t( effect, buff );
 }
 
 } // Namespace special effects ends
@@ -5030,12 +5246,9 @@ void nullification_dynamo( special_effect_t& effect )
   {
     null_barrier_damage_t( const special_effect_t& effect, const azerite_essence_t& essence ) :
       proc_spell_t( "null_barrier_damage", effect.player,
-                    // Waiting for whitelising
-                    effect.player -> find_spell( 296061 ) == spell_data_t::not_found() ? spell_data_t::nil() : effect.player -> find_spell( 296061 ),
+                    effect.player -> find_spell( 296061 ),
                     essence.item() )
     {
-      // A lot of manual data here because the spell isn't whitelisted yet
-      school = SCHOOL_SHADOW;
       may_crit = false;
       split_aoe_damage = true;
       aoe = -1;
@@ -5052,6 +5265,7 @@ void nullification_dynamo( special_effect_t& effect )
       null_barrier_damage( damage )
     {
       default_value = essence.spell_ref( 1u, essence_type::MINOR ).effectN( 1 ).average( essence.item() );
+      set_absorb_source(p->get_stats("null_barrier"));
     }
 
     void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
@@ -5284,9 +5498,12 @@ struct reaping_flames_t : public azerite_essence_major_t
   double lo_hp; // note these are base_value and NOT percent
   double hi_hp;
   double cd_mod;
+  double cd_reset;
+  buff_t* damage_buff;
 
   reaping_flames_t( player_t* p, const std::string& options_str ) :
-    azerite_essence_major_t( p, "reaping_flames", p->find_spell( 310690 ) )
+    azerite_essence_major_t( p, "reaping_flames", p->find_spell( 310690 ) ),
+    damage_buff()
   {
     parse_options( options_str );
     // Damage stored in R1 MINOR
@@ -5294,9 +5511,52 @@ struct reaping_flames_t : public azerite_essence_major_t
 
     may_crit = true;
 
-    lo_hp  = essence.spell_ref( 1u ).effectN( 2 ).base_value();
-    hi_hp  = essence.spell_ref( 2u, essence_spell::UPGRADE, essence_type::MAJOR ).effectN( 1 ).base_value();
-    cd_mod = -essence.spell_ref( 1u ).effectN( 3 ).base_value();
+    lo_hp    = essence.spell_ref( 1u ).effectN( 2 ).base_value();
+    hi_hp    = essence.spell_ref( 2u, essence_spell::UPGRADE, essence_type::MAJOR ).effectN( 1 ).base_value();
+    cd_mod   = -essence.spell_ref( 1u ).effectN( 3 ).base_value();
+    cd_reset = essence.spell_ref( 3u, essence_spell::UPGRADE, essence_type::MAJOR ).effectN( 2 ).base_value();
+  }
+
+  void init() override
+  {
+    azerite_essence_major_t::init();
+
+    if ( essence.rank() < 3 )
+      return;
+
+    damage_buff = buff_t::find( player, "reaping_flames" );
+    if ( !damage_buff )
+    {
+      damage_buff = make_buff( player, "reaping_flames", player->find_spell( 311202 ) )
+        ->set_default_value( essence.spell_ref( 3u, essence_spell::UPGRADE, essence_type::MAJOR ).effectN( 1 ).percent() );
+
+      range::for_each( sim->actor_list, [ this ] ( player_t* target )
+      {
+        if ( !target->is_enemy() )
+          return;
+
+        target->callbacks_on_demise.emplace_back( [ this ] ( player_t* enemy )
+        {
+          if ( player->get_target_data( enemy )->debuff.reaping_flames_tracker->check() )
+          {
+            cooldown->adjust( timespan_t::from_seconds( cd_reset ) - cooldown->duration );
+            damage_buff->trigger();
+          }
+        } );
+      } );
+    }
+  }
+
+  double action_multiplier() const override
+  {
+    double am = azerite_essence_major_t::action_multiplier();
+
+    if ( damage_buff )
+    {
+      am *= 1.0 + damage_buff->value();
+    }
+
+    return am;
   }
 
   void execute() override
@@ -5311,6 +5571,12 @@ struct reaping_flames_t : public azerite_essence_major_t
 
     if ( reduce )
       cooldown->adjust( timespan_t::from_seconds ( cd_mod ) );
+
+    if ( damage_buff )
+    {
+      damage_buff->expire();
+      player->get_target_data( target )->debuff.reaping_flames_tracker->trigger();
+    }
   }
 };
 // End Breath of the Dying
@@ -5407,14 +5673,14 @@ void formless_void( special_effect_t& effect )
   if ( !buff )
   {
     auto primary = essence.spell_ref( 1u, essence_spell::BASE, essence_type::MINOR ).effectN( 2 ).average( essence.item() );
-    primary *= 1 + essence.spell_ref( 2u, essence_spell::UPGRADE ).effectN( 1 ).percent();
+    primary *= 1 + essence.spell_ref( 2u, essence_spell::UPGRADE, essence_type::MINOR ).effectN( 1 ).percent();
 
     stat_buff_t* stat_buff = make_buff<stat_buff_t>( effect.player, "symbiotic_presence", effect.player->find_spell( 312915 ) )
       ->add_stat( effect.player->convert_hybrid_stat( STAT_STR_AGI_INT ), primary );
 
     if ( essence.rank() >= 3 )
     {
-      stat_buff -> add_stat( STAT_HASTE_RATING, essence.spell_ref( 3u, essence_spell::UPGRADE ).effectN( 1 ).average( essence.item() ) );
+      stat_buff -> add_stat( STAT_HASTE_RATING, essence.spell_ref( 3u, essence_spell::UPGRADE, essence_type::MINOR ).effectN( 1 ).average( essence.item() ) );
     }
 
     buff = stat_buff;
@@ -5430,6 +5696,48 @@ void formless_void( special_effect_t& effect )
     } );
   } );
 
+  register_essence_corruption_resistance( effect );
+}
+
+// Strength of the Warden
+// Ignore Rank 1 major (taunt)
+// TODO: Implement R2 major (dodge on use), R3 major (damage increase against affected enemies)
+// Ignore R1/R2 minor ? (stores healing taken and triggers on parry/dodge)
+// TODO: add a user-input option for R3 minor? (tanks get 3% max health for every player with secondary r3 in the raid)
+// Technically a player without the essence can get buffed by others too, as long as they're in tank spec
+void strength_of_the_warden( special_effect_t& effect )
+{
+  auto essence = effect.player -> find_azerite_essence( effect.driver() -> essence_id() );
+  if ( !essence.enabled() )
+    return;
+
+  // R3 Minor, +3% max health to you (implemented) and other tank specializations characters in your raid (NYI)
+  // There doesn't seem to be any buff associated with the health gain, similarly to Warriors' Indomitable talent
+  double health_gain = essence.spell_ref( 3u, essence_spell::UPGRADE, essence_type::MINOR ).effectN( 1 ).percent();
+  effect.player -> resources.initial_multiplier[ RESOURCE_HEALTH ] *= 1.0 + health_gain;
+  effect.player -> recalculate_resource_max( RESOURCE_HEALTH );
+
+  register_essence_corruption_resistance( effect );
+}
+
+// Unwavering Ward
+// Just register the corruption resistance
+void unwavering_ward( special_effect_t& effect )
+{
+  register_essence_corruption_resistance( effect );
+}
+
+// Spirit of Preservation
+// Just register the corruption resistance
+void spirit_of_preservation( special_effect_t& effect )
+{
+  register_essence_corruption_resistance( effect );
+}
+
+// Touch of the Everlasting
+// Just register the corruption resistance
+void touch_of_the_everlasting( special_effect_t& effect )
+{
   register_essence_corruption_resistance( effect );
 }
 

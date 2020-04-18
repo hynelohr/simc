@@ -952,6 +952,7 @@ void print_html_action_info( report::sc_html_stream& os, unsigned stats_mask, co
                  "<li><span class=\"label\">range:</span>%.1f</li>\n"
                  "<li><span class=\"label\">travel_speed:</span>%.4f</li>\n"
                  "<li><span class=\"label\">trigger_gcd:</span>%.4f</li>\n"
+                 "<li><span class=\"label\">gcd_type:</span>%s</li>\n"
                  "<li><span class=\"label\">min_gcd:</span>%.4f</li>\n"
                  "<li><span class=\"label\">base_cost:</span>%.1f</li>\n"
                  "<li><span class=\"label\">secondary_cost:</span>%.1f</li>\n"
@@ -970,6 +971,7 @@ void print_html_action_info( report::sc_html_stream& os, unsigned stats_mask, co
                  a->range,
                  a->travel_speed,
                  a->trigger_gcd.total_seconds(),
+                 util::gcd_haste_type_string(a->gcd_type),
                  a->min_gcd.total_seconds(),
                  a->base_costs[ a->current_resource() ],
                  a->secondary_costs[ a->current_resource() ],
@@ -3105,6 +3107,7 @@ void print_html_player_buff( report::sc_html_stream& os, const buff_t& b, int re
   if ( report_details )
   {
     const stat_buff_t* stat_buff = dynamic_cast<const stat_buff_t*>( &b );
+    const auto* absorb_buff = dynamic_cast<const absorb_buff_t*>(&b);
 
     int first_rows    = 2 + ( b.item ? 16 : 15 );  // # of rows in the first column incl 2 for header (buff details)
     int second_rows   = ( b.rppm ? 5 : 0 ) +
@@ -3193,6 +3196,15 @@ void print_html_player_buff( report::sc_html_stream& os, const buff_t& b, int re
                      util::stat_type_string( stat_buff->stats[ j ].stat ),
                      stat_buff->stats[ j ].amount );
         }
+        os << "</ul>\n";
+      }
+
+      if ( absorb_buff )
+      {
+        os << "<h4>Absorb Details</h4>\n"
+          << "<ul>\n";
+        os.printf("<li><span class=\"label\">school:</span>%s</li>\n", util::school_type_string( absorb_buff->absorb_school ) );
+        os.printf("<li><span class=\"label\">high priority:</span>%s</li>\n", absorb_buff -> high_priority ? "yes" : "no" );
         os << "</ul>\n";
       }
 

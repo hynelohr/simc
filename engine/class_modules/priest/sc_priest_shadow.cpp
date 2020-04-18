@@ -685,10 +685,7 @@ struct shadow_word_pain_t final : public priest_spell_t
   {
     double d = priest_spell_t::bonus_ta( state );
 
-    if ( priest().azerite.death_throes.enabled() )
-    {
-      d += priest().azerite.death_throes.value( 1 );
-    }
+    d += get_death_throes_bonus();
 
     return d;
   }
@@ -2044,6 +2041,7 @@ void priest_t::generate_apl_shadow()
                    "Use Memory of Lucid Dreams right before you are about to fall out of Voidform" );
   cds->add_action( "blood_of_the_enemy" );
   cds->add_action( "guardian_of_azeroth,if=buff.voidform.stack>15" );
+  cds->add_action( "use_item,name=manifesto_of_madness,if=spell_targets.mind_sear>=2|raid_event.adds.in>60" );
   cds->add_action( "focused_azerite_beam,if=spell_targets.mind_sear>=2|raid_event.adds.in>60" );
   cds->add_action( "purifying_blast,if=spell_targets.mind_sear>=2|raid_event.adds.in>60" );
   cds->add_action( "concentrated_flame,line_cd=6,"

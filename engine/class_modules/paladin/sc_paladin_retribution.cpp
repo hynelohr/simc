@@ -190,19 +190,15 @@ struct crusade_t : public paladin_spell_t
   {
     paladin_spell_t::execute();
 
+    // If Visions already procced the buff and this spell is used, all stacks are reset to 1
+    // The duration is also set to its default value, there's no extending or pandemic
+    if ( p() -> buffs.crusade -> up() )
+      p() -> buffs.crusade -> expire();
+
     p() -> buffs.crusade -> trigger();
 
     if ( p() -> azerite.avengers_might.ok() )
       p() -> buffs.avengers_might -> trigger( 1, p() -> buffs.avengers_might -> default_value, -1.0, p() -> buffs.crusade -> buff_duration );
-  }
-
-  bool ready() override
-  {
-    // Crusade can not be used if the buff is already active (eg. with Vision of Perfection)
-    if ( p() -> buffs.crusade -> check() )
-      return false;
-    else
-      return paladin_spell_t::ready();
   }
 };
 
@@ -485,7 +481,7 @@ struct shield_of_vengeance_proc_t : public paladin_spell_t
 struct shield_of_vengeance_t : public paladin_absorb_t
 {
   shield_of_vengeance_t( paladin_t* p, const std::string& options_str ) :
-    paladin_absorb_t( "shield_of_vengeance", p, p -> find_spell( 184662 ) )
+    paladin_absorb_t( "shield_of_vengeance", p, p -> find_specialization_spell( "Shield of Vengeance" ) )
   {
     parse_options( options_str );
 

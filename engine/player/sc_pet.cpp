@@ -129,6 +129,9 @@ void pet_t::init_base_stats()
   // Pets have inherent 5% critical strike chance if not overridden.
   base.spell_crit_chance  = 0.05;
   base.attack_crit_chance = 0.05;
+
+  base.armor_coeff = dbc.armor_mitigation_constant( level() );
+  sim -> print_debug( "{} base armor coefficient set to {}.", *this, base.armor_coeff );
 }
 
 void pet_t::init_target()
@@ -237,6 +240,39 @@ void pet_t::create_buffs()
     debuffs.casting = make_buff( this, "casting" )
       ->set_max_stack( 1 )
       ->set_quiet( true );
+  }
+}
+
+void pet_t::adjust_duration( const timespan_t& adjustment )
+{
+  if ( !expiration || adjustment == 0_ms )
+  {
+    return;
+  }
+
+  auto new_duration = expiration->remains() + adjustment;
+  if ( new_duration <= 0_ms )
+  {
+    sim->print_debug( "{} pet {} duration adjusted to {}, dismissing ...",
+      owner->name(), name_str, new_duration );
+    dismiss();
+  }
+  else
+  {
+    duration += adjustment;
+
+    sim->print_debug( "{} pet {} duration adjusted to {}",
+      owner->name(), name_str, new_duration );
+
+    if ( new_duration > expiration->remains() )
+    {
+      expiration->reschedule( new_duration );
+    }
+    else
+    {
+      event_t::cancel( expiration );
+      expiration = make_event<expiration_t>( *sim, *this, new_duration );
+    }
   }
 }
 
